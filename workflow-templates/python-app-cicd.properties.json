@@ -1,0 +1,14 @@
+{
+    "name": "Python Application CI/CD",
+    "description": "Complete CI/CD pipeline for Python applications with lint, test, and automated deployment",
+    "iconName": "python",
+    "categories": [
+        "Python",
+        "Deployment"
+    ],
+    "filePatterns": [
+        "requirements.txt$",
+        "setup.py$",
+        "pyproject.toml$"
+    ]
+}

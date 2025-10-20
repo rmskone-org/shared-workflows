@@ -1,0 +1,25 @@
+name: Python App CI/CD
+
+on:
+  push:
+    branches:
+      - dev
+      - 'feature/**'
+      - 'bug/**'
+      - 'refactor/**'
+      - test
+      - main
+  pull_request:
+    branches:
+      - dev
+      - test
+      - main
+
+jobs:
+  ci_cd:
+    uses: rmskone-org/shared-workflows/.github/workflows/ci-cd-pipeline.yml@main
+    with:
+      app_name: 'myapp'  # Replace with your application name
+      app_port: '8000'   # Replace with your application port
+      python_version: '3.12'  # Optional: specify Python version
+    secrets: inherit
