@@ -89,6 +89,7 @@ jobs:
   deploy_dev:
     name: Deploy to Development
     runs-on: [self-hosted, dev]
+    environment: development
     needs: test
     if: |
       github.ref == 'refs/heads/dev' ||
@@ -191,6 +192,7 @@ jobs:
   deploy_test:
     name: Deploy to Test
     runs-on: [self-hosted, test]
+    environment: test
     needs: test
     if: github.ref == 'refs/heads/test'
     steps:
