@@ -107,41 +107,125 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
 
-      - name: Parse workflow repository and ref
-        id: workflow_info
+      - name: Parse environment hostnames
+        id: hostnames
         run: |
-          # workflow_ref format: owner/repo/.github/workflows/workflow.yml@ref
-          WORKFLOW_REF="${{ github.workflow_ref }}"
+          HOSTNAMES="${{ inputs.environment_hostnames }}"
+          ENV="development"
 
-          # Extract repository (everything before /.github/)
-          REPO=$(echo "$WORKFLOW_REF" | sed 's/\/.github.*//')
+          # Map environment names to short prefixes
+          case "$ENV" in
+            development) PREFIX="dev" ;;
+            test) PREFIX="test" ;;
+            production) PREFIX="prod" ;;
+            *) echo "Unknown environment: $ENV"; exit 1 ;;
+          esac
 
-          # Extract ref (everything after @)
-          REF=$(echo "$WORKFLOW_REF" | sed 's/.*@//')
+          # Extract hostname for this environment
+          HOST=$(echo "$HOSTNAMES" | tr ',' '\n' | grep "^${PREFIX}=" | cut -d'=' -f2)
 
-          echo "repository=$REPO" >> $GITHUB_OUTPUT
-          echo "ref=$REF" >> $GITHUB_OUTPUT
-          echo "Workflow repository: $REPO"
-          echo "Workflow ref: $REF"
+          # Set default if not found
+          if [ -z "$HOST" ]; then
+            case "$ENV" in
+              development) HOST="dev01" ;;
+              test) HOST="test01" ;;
+              production) HOST="prod01" ;;
+            esac
+          fi
 
-      - name: Checkout shared workflow repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.workflow_info.outputs.repository }}
-          ref: ${{ steps.workflow_info.outputs.ref }}
-          path: .shared-workflows
+          echo "hostname=${HOST}" >> $GITHUB_OUTPUT
 
-      - name: Deploy Application
-        uses: ./.shared-workflows/.github/actions/deploy
-        with:
-          environment: development
-          app_name: ${{ inputs.app_name }}
-          app_port: ${{ inputs.app_port }}
-          python_version: ${{ inputs.python_version }}
-          environment_hostnames: ${{ inputs.environment_hostnames }}
-          health_check_path: ${{ inputs.health_check_path }}
-          slack_webhook_url: ${{ inputs.slack_webhook_url }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      - name: Install Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible
+
+      - name: Deploy with Ansible
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ ! -d "ansible" ]; then
+            echo "Error: ansible directory not found"
+            exit 1
+          fi
+          cd ansible
+          ansible-playbook -i inventory/development/hosts.yml \
+            playbooks/deploy.yml \
+            -e "openai_api_key=${OPENAI_API_KEY}" \
+            -e "app_name=${{ inputs.app_name }}" \
+            -e "app_port=${{ inputs.app_port }}"
+
+      - name: Verify Deployment
+        run: |
+          HOST="${{ steps.hostnames.outputs.hostname }}"
+          echo "Checking service status on $HOST..."
+          ansible $HOST -i ansible/inventory/development/hosts.yml \
+            -m shell -a "systemctl status ${{ inputs.app_name }} --no-pager" -b
+
+          echo "Checking recent logs..."
+          ansible $HOST -i ansible/inventory/development/hosts.yml \
+            -m shell -a "journalctl -u ${{ inputs.app_name }} -n 20 --no-pager" -b
+
+      - name: Health Check
+        run: |
+          HOST="${{ steps.hostnames.outputs.hostname }}"
+          echo "Waiting for service to start..."
+          sleep 10
+
+          # Check if service is active
+          ansible $HOST -i ansible/inventory/development/hosts.yml \
+            -m shell -a "systemctl is-active ${{ inputs.app_name }}" -b
+
+          # HTTP health check
+          echo "Performing HTTP health check on port ${{ inputs.app_port }}..."
+          ansible $HOST -i ansible/inventory/development/hosts.yml \
+            -m shell -a "curl -f http://localhost:${{ inputs.app_port }}${{ inputs.health_check_path }} || exit 1" -b
+
+      - name: Send notification
+        if: always() && inputs.slack_webhook_url != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ inputs.slack_webhook_url }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          STATUS="${JOB_STATUS:-unknown}"
+          COLOR="good"
+          if [ "$STATUS" != "success" ]; then
+            COLOR="danger"
+          fi
+
+          # Capitalize environment name for display
+          ENV_DISPLAY="development"
+          ENV_DISPLAY="$(echo ${ENV_DISPLAY:0:1} | tr '[:lower:]' '[:upper:]')${ENV_DISPLAY:1}"
+
+          # Add rocket emoji for production
+          TITLE="${ENV_DISPLAY} Deployment"
+          if [ "development" = "production" ]; then
+            TITLE="🚀 ${TITLE}"
+          fi
+
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"attachments\": [{
+                \"color\": \"$COLOR\",
+                \"title\": \"$TITLE\",
+                \"text\": \"${{ inputs.app_name }} deployment to development: $STATUS\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
+                  {\"title\": \"Commit\", \"value\": \"${{ github.sha }}\", \"short\": true},
+                  {\"title\": \"Actor\", \"value\": \"${{ github.actor }}\", \"short\": true}
+                ]
+              }]
+            }"
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "✅ ${{ inputs.app_name }} successfully deployed to development!"
+          echo "Environment: development"
+          echo "Host: ${{ steps.hostnames.outputs.hostname }}"
+          echo "Port: ${{ inputs.app_port }}"
 
   deploy_test:
     name: Deploy to Test
@@ -156,41 +240,125 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
 
-      - name: Parse workflow repository and ref
-        id: workflow_info
+      - name: Parse environment hostnames
+        id: hostnames
         run: |
-          # workflow_ref format: owner/repo/.github/workflows/workflow.yml@ref
-          WORKFLOW_REF="${{ github.workflow_ref }}"
+          HOSTNAMES="${{ inputs.environment_hostnames }}"
+          ENV="test"
 
-          # Extract repository (everything before /.github/)
-          REPO=$(echo "$WORKFLOW_REF" | sed 's/\/.github.*//')
+          # Map environment names to short prefixes
+          case "$ENV" in
+            development) PREFIX="dev" ;;
+            test) PREFIX="test" ;;
+            production) PREFIX="prod" ;;
+            *) echo "Unknown environment: $ENV"; exit 1 ;;
+          esac
 
-          # Extract ref (everything after @)
-          REF=$(echo "$WORKFLOW_REF" | sed 's/.*@//')
+          # Extract hostname for this environment
+          HOST=$(echo "$HOSTNAMES" | tr ',' '\n' | grep "^${PREFIX}=" | cut -d'=' -f2)
 
-          echo "repository=$REPO" >> $GITHUB_OUTPUT
-          echo "ref=$REF" >> $GITHUB_OUTPUT
-          echo "Workflow repository: $REPO"
-          echo "Workflow ref: $REF"
+          # Set default if not found
+          if [ -z "$HOST" ]; then
+            case "$ENV" in
+              development) HOST="dev01" ;;
+              test) HOST="test01" ;;
+              production) HOST="prod01" ;;
+            esac
+          fi
 
-      - name: Checkout shared workflow repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.workflow_info.outputs.repository }}
-          ref: ${{ steps.workflow_info.outputs.ref }}
-          path: .shared-workflows
+          echo "hostname=${HOST}" >> $GITHUB_OUTPUT
 
-      - name: Deploy Application
-        uses: ./.shared-workflows/.github/actions/deploy
-        with:
-          environment: test
-          app_name: ${{ inputs.app_name }}
-          app_port: ${{ inputs.app_port }}
-          python_version: ${{ inputs.python_version }}
-          environment_hostnames: ${{ inputs.environment_hostnames }}
-          health_check_path: ${{ inputs.health_check_path }}
-          slack_webhook_url: ${{ inputs.slack_webhook_url }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      - name: Install Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible
+
+      - name: Deploy with Ansible
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ ! -d "ansible" ]; then
+            echo "Error: ansible directory not found"
+            exit 1
+          fi
+          cd ansible
+          ansible-playbook -i inventory/test/hosts.yml \
+            playbooks/deploy.yml \
+            -e "openai_api_key=${OPENAI_API_KEY}" \
+            -e "app_name=${{ inputs.app_name }}" \
+            -e "app_port=${{ inputs.app_port }}"
+
+      - name: Verify Deployment
+        run: |
+          HOST="${{ steps.hostnames.outputs.hostname }}"
+          echo "Checking service status on $HOST..."
+          ansible $HOST -i ansible/inventory/test/hosts.yml \
+            -m shell -a "systemctl status ${{ inputs.app_name }} --no-pager" -b
+
+          echo "Checking recent logs..."
+          ansible $HOST -i ansible/inventory/test/hosts.yml \
+            -m shell -a "journalctl -u ${{ inputs.app_name }} -n 20 --no-pager" -b
+
+      - name: Health Check
+        run: |
+          HOST="${{ steps.hostnames.outputs.hostname }}"
+          echo "Waiting for service to start..."
+          sleep 10
+
+          # Check if service is active
+          ansible $HOST -i ansible/inventory/test/hosts.yml \
+            -m shell -a "systemctl is-active ${{ inputs.app_name }}" -b
+
+          # HTTP health check
+          echo "Performing HTTP health check on port ${{ inputs.app_port }}..."
+          ansible $HOST -i ansible/inventory/test/hosts.yml \
+            -m shell -a "curl -f http://localhost:${{ inputs.app_port }}${{ inputs.health_check_path }} || exit 1" -b
+
+      - name: Send notification
+        if: always() && inputs.slack_webhook_url != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ inputs.slack_webhook_url }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          STATUS="${JOB_STATUS:-unknown}"
+          COLOR="good"
+          if [ "$STATUS" != "success" ]; then
+            COLOR="danger"
+          fi
+
+          # Capitalize environment name for display
+          ENV_DISPLAY="test"
+          ENV_DISPLAY="$(echo ${ENV_DISPLAY:0:1} | tr '[:lower:]' '[:upper:]')${ENV_DISPLAY:1}"
+
+          # Add rocket emoji for production
+          TITLE="${ENV_DISPLAY} Deployment"
+          if [ "test" = "production" ]; then
+            TITLE="🚀 ${TITLE}"
+          fi
+
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"attachments\": [{
+                \"color\": \"$COLOR\",
+                \"title\": \"$TITLE\",
+                \"text\": \"${{ inputs.app_name }} deployment to test: $STATUS\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
+                  {\"title\": \"Commit\", \"value\": \"${{ github.sha }}\", \"short\": true},
+                  {\"title\": \"Actor\", \"value\": \"${{ github.actor }}\", \"short\": true}
+                ]
+              }]
+            }"
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "✅ ${{ inputs.app_name }} successfully deployed to test!"
+          echo "Environment: test"
+          echo "Host: ${{ steps.hostnames.outputs.hostname }}"
+          echo "Port: ${{ inputs.app_port }}"
 
   deploy_prod:
     name: Deploy to Production
@@ -205,38 +373,122 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
 
-      - name: Parse workflow repository and ref
-        id: workflow_info
+      - name: Parse environment hostnames
+        id: hostnames
         run: |
-          # workflow_ref format: owner/repo/.github/workflows/workflow.yml@ref
-          WORKFLOW_REF="${{ github.workflow_ref }}"
+          HOSTNAMES="${{ inputs.environment_hostnames }}"
+          ENV="production"
 
-          # Extract repository (everything before /.github/)
-          REPO=$(echo "$WORKFLOW_REF" | sed 's/\/.github.*//')
+          # Map environment names to short prefixes
+          case "$ENV" in
+            development) PREFIX="dev" ;;
+            test) PREFIX="test" ;;
+            production) PREFIX="prod" ;;
+            *) echo "Unknown environment: $ENV"; exit 1 ;;
+          esac
 
-          # Extract ref (everything after @)
-          REF=$(echo "$WORKFLOW_REF" | sed 's/.*@//')
+          # Extract hostname for this environment
+          HOST=$(echo "$HOSTNAMES" | tr ',' '\n' | grep "^${PREFIX}=" | cut -d'=' -f2)
 
-          echo "repository=$REPO" >> $GITHUB_OUTPUT
-          echo "ref=$REF" >> $GITHUB_OUTPUT
-          echo "Workflow repository: $REPO"
-          echo "Workflow ref: $REF"
+          # Set default if not found
+          if [ -z "$HOST" ]; then
+            case "$ENV" in
+              development) HOST="dev01" ;;
+              test) HOST="test01" ;;
+              production) HOST="prod01" ;;
+            esac
+          fi
 
-      - name: Checkout shared workflow repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.workflow_info.outputs.repository }}
-          ref: ${{ steps.workflow_info.outputs.ref }}
-          path: .shared-workflows
+          echo "hostname=${HOST}" >> $GITHUB_OUTPUT
 
-      - name: Deploy Application
-        uses: ./.shared-workflows/.github/actions/deploy
-        with:
-          environment: production
-          app_name: ${{ inputs.app_name }}
-          app_port: ${{ inputs.app_port }}
-          python_version: ${{ inputs.python_version }}
-          environment_hostnames: ${{ inputs.environment_hostnames }}
-          health_check_path: ${{ inputs.health_check_path }}
-          slack_webhook_url: ${{ inputs.slack_webhook_url }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      - name: Install Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible
+
+      - name: Deploy with Ansible
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ ! -d "ansible" ]; then
+            echo "Error: ansible directory not found"
+            exit 1
+          fi
+          cd ansible
+          ansible-playbook -i inventory/production/hosts.yml \
+            playbooks/deploy.yml \
+            -e "openai_api_key=${OPENAI_API_KEY}" \
+            -e "app_name=${{ inputs.app_name }}" \
+            -e "app_port=${{ inputs.app_port }}"
+
+      - name: Verify Deployment
+        run: |
+          HOST="${{ steps.hostnames.outputs.hostname }}"
+          echo "Checking service status on $HOST..."
+          ansible $HOST -i ansible/inventory/production/hosts.yml \
+            -m shell -a "systemctl status ${{ inputs.app_name }} --no-pager" -b
+
+          echo "Checking recent logs..."
+          ansible $HOST -i ansible/inventory/production/hosts.yml \
+            -m shell -a "journalctl -u ${{ inputs.app_name }} -n 20 --no-pager" -b
+
+      - name: Health Check
+        run: |
+          HOST="${{ steps.hostnames.outputs.hostname }}"
+          echo "Waiting for service to start..."
+          sleep 10
+
+          # Check if service is active
+          ansible $HOST -i ansible/inventory/production/hosts.yml \
+            -m shell -a "systemctl is-active ${{ inputs.app_name }}" -b
+
+          # HTTP health check
+          echo "Performing HTTP health check on port ${{ inputs.app_port }}..."
+          ansible $HOST -i ansible/inventory/production/hosts.yml \
+            -m shell -a "curl -f http://localhost:${{ inputs.app_port }}${{ inputs.health_check_path }} || exit 1" -b
+
+      - name: Send notification
+        if: always() && inputs.slack_webhook_url != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ inputs.slack_webhook_url }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          STATUS="${JOB_STATUS:-unknown}"
+          COLOR="good"
+          if [ "$STATUS" != "success" ]; then
+            COLOR="danger"
+          fi
+
+          # Capitalize environment name for display
+          ENV_DISPLAY="production"
+          ENV_DISPLAY="$(echo ${ENV_DISPLAY:0:1} | tr '[:lower:]' '[:upper:]')${ENV_DISPLAY:1}"
+
+          # Add rocket emoji for production
+          TITLE="${ENV_DISPLAY} Deployment"
+          if [ "production" = "production" ]; then
+            TITLE="🚀 ${TITLE}"
+          fi
+
+          curl -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"attachments\": [{
+                \"color\": \"$COLOR\",
+                \"title\": \"$TITLE\",
+                \"text\": \"${{ inputs.app_name }} deployment to production: $STATUS\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
+                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
+                  {\"title\": \"Commit\", \"value\": \"${{ github.sha }}\", \"short\": true},
+                  {\"title\": \"Actor\", \"value\": \"${{ github.actor }}\", \"short\": true}
+                ]
+              }]
+            }"
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "✅ ${{ inputs.app_name }} successfully deployed to production!"
+          echo "Environment: production"
+          echo "Host: ${{ steps.hostnames.outputs.hostname }}"
+          echo "Port: ${{ inputs.app_port }}"
