@@ -103,91 +103,17 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
 
-      - name: Parse environment hostnames
-        id: hostnames
-        run: |
-          HOSTNAMES="${{ inputs.environment_hostnames }}"
-          DEV_HOST=$(echo "$HOSTNAMES" | tr ',' '\n' | grep '^dev=' | cut -d'=' -f2)
-          echo "dev=${DEV_HOST:-development01}" >> $GITHUB_OUTPUT
-
-      - name: Install Ansible
-        run: |
-          python -m pip install --upgrade pip
-          pip install ansible
-
-      - name: Deploy with Ansible
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          if [ ! -d "ansible" ]; then
-            echo "Error: ansible directory not found"
-            exit 1
-          fi
-          cd ansible
-          ansible-playbook -i inventory/development/hosts.yml \
-            playbooks/deploy.yml \
-            -e "openai_api_key=${OPENAI_API_KEY}" \
-            -e "app_name=${{ inputs.app_name }}" \
-            -e "app_port=${{ inputs.app_port }}"
-
-      - name: Verify Deployment
-        run: |
-          HOST="${{ steps.hostnames.outputs.dev }}"
-          echo "Checking service status on $HOST..."
-          ansible $HOST -i ansible/inventory/development/hosts.yml \
-            -m shell -a "systemctl status ${{ inputs.app_name }} --no-pager" -b
-
-          echo "Checking recent logs..."
-          ansible $HOST -i ansible/inventory/development/hosts.yml \
-            -m shell -a "journalctl -u ${{ inputs.app_name }} -n 20 --no-pager" -b
-
-      - name: Health Check
-        run: |
-          HOST="${{ steps.hostnames.outputs.dev }}"
-          echo "Waiting for service to start..."
-          sleep 10
-
-          # Check if service is active
-          ansible $HOST -i ansible/inventory/development/hosts.yml \
-            -m shell -a "systemctl is-active ${{ inputs.app_name }}" -b
-
-          # HTTP health check
-          echo "Performing HTTP health check on port ${{ inputs.app_port }}..."
-          ansible $HOST -i ansible/inventory/development/hosts.yml \
-            -m shell -a "curl -f http://localhost:${{ inputs.app_port }}${{ inputs.health_check_path }} || exit 1" -b
-
-      - name: Send notification
-        if: always() && inputs.slack_webhook_url != ''
-        run: |
-          STATUS="${{ job.status }}"
-          COLOR="good"
-          if [ "$STATUS" != "success" ]; then
-            COLOR="danger"
-          fi
-
-          curl -X POST "${{ inputs.slack_webhook_url }}" \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"attachments\": [{
-                \"color\": \"$COLOR\",
-                \"title\": \"Development Deployment\",
-                \"text\": \"${{ inputs.app_name }} deployment to development: $STATUS\",
-                \"fields\": [
-                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
-                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
-                  {\"title\": \"Commit\", \"value\": \"${{ github.sha }}\", \"short\": true},
-                  {\"title\": \"Actor\", \"value\": \"${{ github.actor }}\", \"short\": true}
-                ]
-              }]
-            }"
-
-      - name: Deployment summary
-        if: success()
-        run: |
-          echo "✅ ${{ inputs.app_name }} successfully deployed to development!"
-          echo "Environment: Development"
-          echo "Host: ${{ steps.hostnames.outputs.dev }}"
-          echo "Port: ${{ inputs.app_port }}"
+      - name: Deploy Application
+        uses: ./.github/actions/deploy
+        with:
+          environment: development
+          app_name: ${{ inputs.app_name }}
+          app_port: ${{ inputs.app_port }}
+          python_version: ${{ inputs.python_version }}
+          environment_hostnames: ${{ inputs.environment_hostnames }}
+          health_check_path: ${{ inputs.health_check_path }}
+          slack_webhook_url: ${{ inputs.slack_webhook_url }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 
   deploy_test:
     name: Deploy to Test
@@ -202,100 +128,24 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
 
-      - name: Parse environment hostnames
-        id: hostnames
-        run: |
-          HOSTNAMES="${{ inputs.environment_hostnames }}"
-          TEST_HOST=$(echo "$HOSTNAMES" | tr ',' '\n' | grep '^test=' | cut -d'=' -f2)
-          echo "test=${TEST_HOST:-test01}" >> $GITHUB_OUTPUT
-
-      - name: Install Ansible
-        run: |
-          python -m pip install --upgrade pip
-          pip install ansible
-
-      - name: Deploy with Ansible
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          if [ ! -d "ansible" ]; then
-            echo "Error: ansible directory not found"
-            exit 1
-          fi
-          cd ansible
-          ansible-playbook -i inventory/test/hosts.yml \
-            playbooks/deploy.yml \
-            -e "openai_api_key=${OPENAI_API_KEY}" \
-            -e "app_name=${{ inputs.app_name }}" \
-            -e "app_port=${{ inputs.app_port }}"
-
-      - name: Verify Deployment
-        run: |
-          HOST="${{ steps.hostnames.outputs.test }}"
-          echo "Checking service status on $HOST..."
-          ansible $HOST -i ansible/inventory/test/hosts.yml \
-            -m shell -a "systemctl status ${{ inputs.app_name }} --no-pager" -b
-
-          echo "Checking recent logs..."
-          ansible $HOST -i ansible/inventory/test/hosts.yml \
-            -m shell -a "journalctl -u ${{ inputs.app_name }} -n 20 --no-pager" -b
-
-      - name: Health Check
-        run: |
-          HOST="${{ steps.hostnames.outputs.test }}"
-          echo "Waiting for service to start..."
-          sleep 10
-
-          # Check if service is active
-          ansible $HOST -i ansible/inventory/test/hosts.yml \
-            -m shell -a "systemctl is-active ${{ inputs.app_name }}" -b
-
-          # HTTP health check
-          echo "Performing HTTP health check on port ${{ inputs.app_port }}..."
-          ansible $HOST -i ansible/inventory/test/hosts.yml \
-            -m shell -a "curl -f http://localhost:${{ inputs.app_port }}${{ inputs.health_check_path }} || exit 1" -b
-
-      - name: Send notification
-        if: always() && inputs.slack_webhook_url != ''
-        run: |
-          STATUS="${{ job.status }}"
-          COLOR="good"
-          if [ "$STATUS" != "success" ]; then
-            COLOR="danger"
-          fi
-
-          curl -X POST "${{ inputs.slack_webhook_url }}" \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"attachments\": [{
-                \"color\": \"$COLOR\",
-                \"title\": \"Test Deployment\",
-                \"text\": \"${{ inputs.app_name }} deployment to test: $STATUS\",
-                \"fields\": [
-                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
-                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
-                  {\"title\": \"Commit\", \"value\": \"${{ github.sha }}\", \"short\": true},
-                  {\"title\": \"Actor\", \"value\": \"${{ github.actor }}\", \"short\": true}
-                ]
-              }]
-            }"
-
-      - name: Deployment summary
-        if: success()
-        run: |
-          echo "✅ ${{ inputs.app_name }} successfully deployed to test!"
-          echo "Environment: Test"
-          echo "Host: ${{ steps.hostnames.outputs.test }}"
-          echo "Port: ${{ inputs.app_port }}"
+      - name: Deploy Application
+        uses: ./.github/actions/deploy
+        with:
+          environment: test
+          app_name: ${{ inputs.app_name }}
+          app_port: ${{ inputs.app_port }}
+          python_version: ${{ inputs.python_version }}
+          environment_hostnames: ${{ inputs.environment_hostnames }}
+          health_check_path: ${{ inputs.health_check_path }}
+          slack_webhook_url: ${{ inputs.slack_webhook_url }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 
   deploy_prod:
     name: Deploy to Production
     runs-on: [self-hosted, prod]
     needs: test
     if: github.ref == 'refs/heads/main'
-    environment:
-      name: production
-      url: http://${{ steps.hostnames.outputs.prod }}:${{ inputs.app_port }}
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
@@ -303,88 +153,14 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
 
-      - name: Parse environment hostnames
-        id: hostnames
-        run: |
-          HOSTNAMES="${{ inputs.environment_hostnames }}"
-          PROD_HOST=$(echo "$HOSTNAMES" | tr ',' '\n' | grep '^prod=' | cut -d'=' -f2)
-          echo "prod=${PROD_HOST:-production01}" >> $GITHUB_OUTPUT
-
-      - name: Install Ansible
-        run: |
-          python -m pip install --upgrade pip
-          pip install ansible
-
-      - name: Deploy with Ansible
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          if [ ! -d "ansible" ]; then
-            echo "Error: ansible directory not found"
-            exit 1
-          fi
-          cd ansible
-          ansible-playbook -i inventory/production/hosts.yml \
-            playbooks/deploy.yml \
-            -e "openai_api_key=${OPENAI_API_KEY}" \
-            -e "app_name=${{ inputs.app_name }}" \
-            -e "app_port=${{ inputs.app_port }}"
-
-      - name: Verify Deployment
-        run: |
-          HOST="${{ steps.hostnames.outputs.prod }}"
-          echo "Checking service status on $HOST..."
-          ansible $HOST -i ansible/inventory/production/hosts.yml \
-            -m shell -a "systemctl status ${{ inputs.app_name }} --no-pager" -b
-
-          echo "Checking recent logs..."
-          ansible $HOST -i ansible/inventory/production/hosts.yml \
-            -m shell -a "journalctl -u ${{ inputs.app_name }} -n 20 --no-pager" -b
-
-      - name: Health Check
-        run: |
-          HOST="${{ steps.hostnames.outputs.prod }}"
-          echo "Waiting for service to start..."
-          sleep 10
-
-          # Check if service is active
-          ansible $HOST -i ansible/inventory/production/hosts.yml \
-            -m shell -a "systemctl is-active ${{ inputs.app_name }}" -b
-
-          # HTTP health check
-          echo "Performing HTTP health check on port ${{ inputs.app_port }}..."
-          ansible $HOST -i ansible/inventory/production/hosts.yml \
-            -m shell -a "curl -f http://localhost:${{ inputs.app_port }}${{ inputs.health_check_path }} || exit 1" -b
-
-      - name: Send notification
-        if: always() && inputs.slack_webhook_url != ''
-        run: |
-          STATUS="${{ job.status }}"
-          COLOR="good"
-          if [ "$STATUS" != "success" ]; then
-            COLOR="danger"
-          fi
-
-          curl -X POST "${{ inputs.slack_webhook_url }}" \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"attachments\": [{
-                \"color\": \"$COLOR\",
-                \"title\": \"🚀 Production Deployment\",
-                \"text\": \"${{ inputs.app_name }} deployment to production: $STATUS\",
-                \"fields\": [
-                  {\"title\": \"Repository\", \"value\": \"${{ github.repository }}\", \"short\": true},
-                  {\"title\": \"Branch\", \"value\": \"${{ github.ref_name }}\", \"short\": true},
-                  {\"title\": \"Commit\", \"value\": \"${{ github.sha }}\", \"short\": true},
-                  {\"title\": \"Actor\", \"value\": \"${{ github.actor }}\", \"short\": true}
-                ]
-              }]
-            }"
-
-      - name: Deployment summary
-        if: success()
-        run: |
-          echo "✅ ${{ inputs.app_name }} successfully deployed to production!"
-          echo "Environment: Production"
-          echo "Host: ${{ steps.hostnames.outputs.prod }}"
-          echo "Port: ${{ inputs.app_port }}"
+      - name: Deploy Application
+        uses: ./.github/actions/deploy
+        with:
+          environment: production
+          app_name: ${{ inputs.app_name }}
+          app_port: ${{ inputs.app_port }}
+          python_version: ${{ inputs.python_version }}
+          environment_hostnames: ${{ inputs.environment_hostnames }}
+          health_check_path: ${{ inputs.health_check_path }}
+          slack_webhook_url: ${{ inputs.slack_webhook_url }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
