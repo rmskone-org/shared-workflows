@@ -94,7 +94,10 @@ jobs:
     if: |
       github.ref == 'refs/heads/dev' ||
       startsWith(github.ref, 'refs/heads/feature/') ||
+      startsWith(github.ref, 'refs/heads/feat/') ||
       startsWith(github.ref, 'refs/heads/bug/') ||
+      startsWith(github.ref, 'refs/heads/fix/') ||
+      startsWith(github.ref, 'refs/heads/hotfix/') ||
       startsWith(github.ref, 'refs/heads/refactor/')
     steps:
       - uses: actions/checkout@v4
