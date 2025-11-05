@@ -4,9 +4,10 @@ on:
   push:
     branches:
       - dev
-      - 'feature/**'
-      - 'bug/**'
+      - 'feature/**'  # or 'feat/**'
+      - 'bug/**'      # or 'fix/**', 'hotfix/**'
       - 'refactor/**'
+      - 'claude/**'   # Claude Code branches
       - test
       - main
   pull_request:
