@@ -107,8 +107,15 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
 
+      - name: Checkout shared workflow repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.action_repository }}
+          ref: ${{ github.action_ref }}
+          path: .shared-workflows
+
       - name: Deploy Application
-        uses: ./.github/actions/deploy
+        uses: ./.shared-workflows/.github/actions/deploy
         with:
           environment: development
           app_name: ${{ inputs.app_name }}
@@ -132,8 +139,15 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
 
+      - name: Checkout shared workflow repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.action_repository }}
+          ref: ${{ github.action_ref }}
+          path: .shared-workflows
+
       - name: Deploy Application
-        uses: ./.github/actions/deploy
+        uses: ./.shared-workflows/.github/actions/deploy
         with:
           environment: test
           app_name: ${{ inputs.app_name }}
@@ -157,8 +171,15 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
 
+      - name: Checkout shared workflow repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.action_repository }}
+          ref: ${{ github.action_ref }}
+          path: .shared-workflows
+
       - name: Deploy Application
-        uses: ./.github/actions/deploy
+        uses: ./.shared-workflows/.github/actions/deploy
         with:
           environment: production
           app_name: ${{ inputs.app_name }}
