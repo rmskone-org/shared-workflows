@@ -60,7 +60,7 @@ jobs:
   # 🧪 2. Unit Tests
   test:
     name: Run Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, test]
     needs: lint
     steps:
       - uses: actions/checkout@v4
