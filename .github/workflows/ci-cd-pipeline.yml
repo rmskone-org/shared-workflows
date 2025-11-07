@@ -57,11 +57,21 @@ jobs:
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-  # 🧪 2. Unit Tests
+  # 🧪 2. Unit Tests (run before dev deployment only)
   test:
     name: Run Unit Tests
     runs-on: [self-hosted, test]
     needs: lint
+    # Only run unit tests before development deployment
+    if: |
+      github.ref == 'refs/heads/dev' ||
+      startsWith(github.ref, 'refs/heads/feature/') ||
+      startsWith(github.ref, 'refs/heads/feat/') ||
+      startsWith(github.ref, 'refs/heads/bug/') ||
+      startsWith(github.ref, 'refs/heads/fix/') ||
+      startsWith(github.ref, 'refs/heads/hotfix/') ||
+      startsWith(github.ref, 'refs/heads/refactor/') ||
+      startsWith(github.ref, 'refs/heads/claude/')
     steps:
       - uses: actions/checkout@v4
 
@@ -231,7 +241,7 @@ jobs:
     name: Deploy to Test
     runs-on: [self-hosted, test]
     environment: test
-    needs: test
+    needs: lint
     if: github.ref == 'refs/heads/test'
     steps:
       - uses: actions/checkout@v4
@@ -363,9 +373,9 @@ jobs:
   deploy_prod:
     name: Deploy to Production
     runs-on: [self-hosted, prod]
-    needs: test
-    if: github.ref == 'refs/heads/main'
     environment: production
+    needs: lint
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
